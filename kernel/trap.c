@@ -53,8 +53,6 @@ usertrap(void)
   if(r_scause() == 8){
     // system call
 
-
-    /* remove p from cpu proc list. change p state to zommbie */
     if(p->killed)
       exit(-1);
 
@@ -75,7 +73,6 @@ usertrap(void)
     p->killed = 1;
   }
 
-  /* remove p from cpu proc list. change p state to zommbie */
   if(p->killed)
     exit(-1);
 

@@ -1,4 +1,3 @@
-#include "kernel/Queue.h"
 // Saved registers for kernel context switches.
 struct context {
   uint64 ra;
@@ -93,6 +92,10 @@ struct proc {
   int killed;                  // If non-zero, have been killed
   int xstate;                  // Exit status to be returned to parent's wait
   int pid;                     // Process ID
+  process_entry_t next;
+  struct spinlock list_lock;
+  int affiliated_cpu;
+  int entry;
 
   // wait_lock must be held when using this:
   struct proc *parent;         // Parent process
@@ -106,5 +109,10 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
-  int affiliatedCpu;
+};
+
+struct sentinel{
+    process_entry_t next;
+    struct spinlock lock;
+    char* name;    
 };

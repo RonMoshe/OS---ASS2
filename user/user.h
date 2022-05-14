@@ -23,10 +23,8 @@ int getpid(void);
 char* sbrk(int);
 int sleep(int);
 int uptime(void);
-void procdump(void);
-void test_enqueue(void);
-void test_dequeue(void);
-
+int set_cpu(int);
+int get_cpu(void);
 
 
 // ulib.c

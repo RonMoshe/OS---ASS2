@@ -36,8 +36,6 @@ entry("getpid");
 entry("sbrk");
 entry("sleep");
 entry("uptime");
-entry("procdump");
-entry("test_enqueue");
-entry("test_dequeue");
-
+entry("set_cpu");
+entry("get_cpu");
 

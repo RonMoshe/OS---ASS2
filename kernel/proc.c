@@ -6,19 +6,22 @@
 #include "proc.h"
 #include "defs.h"
 
-
-queue_t test;
-volatile int element;
+#define END -1
+#define NO_ELEMENT 0x7fffffff
+#define INIT_ENTRY 0
+#define FIRST_CPU 0
 
 struct cpu cpus[NCPU];
 
+static struct sentinel cpu_runnable_list[NCPU];
+
 struct proc proc[NPROC];
+
+static struct sentinel unused_list, sleeping_list, zombie_list;
 
 struct proc *initproc;
 
-int nextpid = 1;
-volatile int* pnext_pid = &nextpid;
-
+volatile int nextpid = 1;
 struct spinlock pid_lock;
 
 extern void forkret(void);
@@ -55,18 +58,32 @@ void
 procinit(void)
 {
   struct proc *p;
-
-  static int a[NPROC];
-  test.elements = a;
-  test.tail = 0;
-  test.n = NPROC;
+  int i;
   
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
-  for(p = proc; p < &proc[NPROC]; p++) {
+
+  // Initialize all lists
+  init_list(&unused_list, "Unused List");
+  init_list(&sleeping_list, "Sleeping List");
+  init_list(&zombie_list, "Zombie List");
+
+  for(i = 0, p = proc; p < &proc[NPROC]; p++, i++) {
       initlock(&p->lock, "proc");
+      initlock(&p->list_lock, "proc list lock");
       p->kstack = KSTACK((int) (p - proc));
+      // Admit all process to UNUSED list
+      enqueue(&unused_list, i);
   }
+
+  static char* cpu_runnable_list_names[] = {"CPU0", "CPU1", "CPU2", "CPU3", "CPU4", "CPU5", "CPU6", "CPU7"};
+
+  for(i = 0; i<NCPU; i++)
+  {
+    init_list(&cpu_runnable_list[i], cpu_runnable_list_names[i]);
+  }
+
+
 }
 
 // Must be called with interrupts disabled,
@@ -101,28 +118,15 @@ myproc(void) {
 int
 allocpid() 
 {
-
- /*
-  int pid;
-  
-  acquire(&pid_lock);
-  pid = nextpid;
-  nextpid = nextpid + 1;
-  release(&pid_lock);
-
-  return pid;
-  */
- 
   int expected, new_val;
 
   do
   {
     expected = nextpid;
     new_val = nextpid + 1;
-  } while (cas(pnext_pid, expected, new_val));
+  } while (cas(&nextpid, expected, new_val));
 
   return expected;
-
 }
 
 // Look in the process table for an UNUSED proc.
@@ -133,20 +137,21 @@ static struct proc*
 allocproc(void)
 {
   struct proc *p;
-
-  for(p = proc; p < &proc[NPROC]; p++) {
+  process_entry_t pentry;
+  dequeue(&unused_list, &pentry);
+  if(pentry != NO_ELEMENT)
+  {
+    p = &proc[pentry];
     acquire(&p->lock);
-    if(p->state == UNUSED) {
-      goto found;
-    } else {
-      release(&p->lock);
-    }
   }
-  return 0;
+  else
+  {
+    return 0;
+  }
 
-found:
   p->pid = allocpid();
   p->state = USED;
+  p->entry = pentry;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -178,6 +183,8 @@ found:
 static void
 freeproc(struct proc *p)
 {
+  // printf("enter freeproc\n");
+  process_entry_t pentry;
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
@@ -191,6 +198,9 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+  pentry = p->entry;
+  remove(&zombie_list, pentry);
+  enqueue(&unused_list, pentry);
   p->state = UNUSED;
 }
 
@@ -270,7 +280,12 @@ userinit(void)
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
+  p->affiliated_cpu = FIRST_CPU;
+  enqueue(&cpu_runnable_list[FIRST_CPU], p->entry);
   p->state = RUNNABLE;
+
+  // printf("proc %s entry %d state %d\n", p->name, p->entry, p->state);
+  // print_list(&cpu_runnable_list[FIRST_CPU]);
 
   release(&p->lock);
 }
@@ -337,11 +352,11 @@ fork(void)
 
   acquire(&wait_lock);
   np->parent = p;
+  np->affiliated_cpu = p->affiliated_cpu;
   release(&wait_lock);
 
-  //add np(child) to p's(father) cpu process list
-
   acquire(&np->lock);
+  enqueue(&cpu_runnable_list[np->affiliated_cpu], np->entry);
   np->state = RUNNABLE;
   release(&np->lock);
 
@@ -369,6 +384,7 @@ reparent(struct proc *p)
 void
 exit(int status)
 {
+  // printf("enter exit\n");
   struct proc *p = myproc();
 
   if(p == initproc)
@@ -399,6 +415,7 @@ exit(int status)
   acquire(&p->lock);
 
   p->xstate = status;
+  enqueue(&zombie_list, p->entry);
   p->state = ZOMBIE;
 
   release(&wait_lock);
@@ -469,28 +486,36 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
+
+  int cpu_id = cpuid();
+  struct sentinel* cpu_list = &cpu_runnable_list[cpu_id];
+  process_entry_t pentry;
   
   c->proc = 0;
-  for(;;){
+  for(;;)
+  {
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
 
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
+    dequeue(cpu_list, &pentry);
+    if(pentry == NO_ELEMENT)
+      continue;
+    
+    p = &proc[pentry];
+    acquire(&p->lock);
 
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-      }
-      release(&p->lock);
-    }
+    // Switch to chosen process.  It is the process's job
+    // to release its lock and then reacquire it
+    // before jumping back to us.
+
+    p->state = RUNNING;
+    c->proc = p;
+    swtch(&c->context, &p->context);
+
+    // Process is done running for now.
+    // It should have changed its p->state before coming back.
+    c->proc = 0;
+    release(&p->lock);
   }
 }
 
@@ -527,6 +552,7 @@ yield(void)
 {
   struct proc *p = myproc();
   acquire(&p->lock);
+  enqueue(&cpu_runnable_list[p->affiliated_cpu], p->entry);
   p->state = RUNNABLE;
   sched();
   release(&p->lock);
@@ -558,6 +584,7 @@ forkret(void)
 void
 sleep(void *chan, struct spinlock *lk)
 {
+  // printf("enter sleep\n");
   struct proc *p = myproc();
   
   // Must acquire p->lock in order to
@@ -568,11 +595,11 @@ sleep(void *chan, struct spinlock *lk)
   // so it's okay to release lk.
 
   acquire(&p->lock);  //DOC: sleeplock1
-  release(lk);
-
   // Go to sleep.
-  p->chan = chan;
+  enqueue(&sleeping_list, p->entry);
   p->state = SLEEPING;
+  p->chan = chan;
+  release(lk);
 
   sched();
 
@@ -590,15 +617,24 @@ void
 wakeup(void *chan)
 {
   struct proc *p;
+  process_entry_t pentry = sleeping_list.next;
 
-  for(p = proc; p < &proc[NPROC]; p++) {
-    if(p != myproc()){
+  while(pentry != END)
+  {
+    p = &proc[pentry];
+    if(p != myproc())
+    {
       acquire(&p->lock);
-      if(p->state == SLEEPING && p->chan == chan) {
+      if(p->state == SLEEPING && p->chan == chan) 
+      {
+        remove(&sleeping_list, pentry);
+        enqueue(&cpu_runnable_list[p->affiliated_cpu], pentry);
+        // printf("proc %s state %d is waked up\n", p->name, p->state);
         p->state = RUNNABLE;
       }
       release(&p->lock);
     }
+    pentry = proc[pentry].next;
   }
 }
 
@@ -609,13 +645,18 @@ int
 kill(int pid)
 {
   struct proc *p;
+  process_entry_t pentry;
 
   for(p = proc; p < &proc[NPROC]; p++){
     acquire(&p->lock);
-    if(p->pid == pid){
+    if(p->pid == pid)
+    {
       p->killed = 1;
       if(p->state == SLEEPING){
         // Wake process from sleep().
+        pentry = p->entry;
+        remove(&sleeping_list, pentry);
+        enqueue(&cpu_runnable_list[p->affiliated_cpu], pentry);
         p->state = RUNNABLE;
       }
       release(&p->lock);
@@ -680,19 +721,180 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
-    printf("Process `:%d, state: %s, name: %s\n", p->pid, state, p->name);
+    printf("%d %s %s", p->pid, state, p->name);
+    printf("\n");
   }
 }
 
-void
-test_enqueue(void)
+void 
+init_list(struct sentinel* list, char* list_name)
 {
-  Enqueue(&test, element);
-  printf("Proc num: %d enqueue  element: %d\n", myproc()->pid, element++);
+  // printf("enter init_list\n");
+  list->name = list_name;
+  list->next = END;
+  initlock(&list->lock, list_name);
+}
+
+void 
+enqueue(struct sentinel* list, process_entry_t pentry)
+{
+  // printf("enter enqueue\n");
+  // print_list(list);
+  process_entry_t prev, curr;
+  struct spinlock *prev_lock, *curr_lock, *p_lock;
+  struct proc* p;
+
+  // first element in the list
+  prev = list->next; 
+  prev_lock = &list->lock; 
+  // inserted process
+  p = &proc[pentry]; 
+  p_lock = &p->list_lock;
+
+  acquire(prev_lock);
+  if(prev == END) // empty list
+  {
+    list->next = pentry;
+    acquire(p_lock);
+    p->next = END;
+    release(p_lock);
+    release(prev_lock);
+    return;
+  }
+
+  // Iterate over the list until prev is the last element
+  curr = proc[prev].next;
+  while(curr != END)
+  {
+    curr_lock = &proc[curr].list_lock;
+    acquire(curr_lock); 
+    release(prev_lock);
+    prev = curr;
+    prev_lock = curr_lock;
+    curr = proc[curr].next;
+  }
+
+  acquire(p_lock);
+  // At this point we are holding both plock, prev_lock
+  proc[prev].next = pentry;
+  p->next = END;
+  release(p_lock);
+  release(prev_lock);
+}
+
+void 
+dequeue(struct sentinel* list, process_entry_t* res)
+{
+  struct spinlock *list_lock, *first_lock;
+  process_entry_t first, next;
+
+  list_lock = &list->lock;
+  acquire(list_lock);
+  first = list->next;
+
+  if(first == END)
+  {
+    *res = NO_ELEMENT;
+    release(list_lock);
+    return;
+  }
+
+  first_lock = &proc[first].list_lock;
+  acquire(first_lock);
+  // At this point we are holding both list_lock, first_lock 
+  next = proc[first].next;
+  *res = first;
+  list->next = next;
+  proc[first].next = END;
+  release(first_lock);
+  release(list_lock);
+}
+
+void 
+remove(struct sentinel* list, process_entry_t target)
+{
+  process_entry_t prev, curr;
+  struct spinlock *prev_lock, *curr_lock, *p_lock;
+  struct proc* p;
+
+  // first element in the list
+  prev = list->next; 
+  prev_lock = &list->lock; 
+  // removed process
+  p = &proc[target]; 
+  p_lock = &p->list_lock;
+
+  acquire(prev_lock);
+  if(prev == END) // empty list
+  {
+    release(prev_lock);
+    return;
+  }
+
+  if(prev == target) // head = target
+  {
+    acquire(p_lock);
+    // At this point we are holding both p_lock, prev_lock = list->lock
+    list->next = p->next;
+    p->next = END;
+    release(p_lock);
+    release(prev_lock);
+    return;
+  }
+
+  // Iterate over the list until prev points to target
+  curr = proc[prev].next;
+  while(curr != END &&  curr != target)
+  {
+    curr_lock = &proc[curr].list_lock;
+    acquire(curr_lock); 
+    release(prev_lock);
+    prev = curr;
+    prev_lock = curr_lock;
+    curr = proc[curr].next;
+  }
+
+  acquire(p_lock);
+  // At this point we are holding both p_lock, prev_lock
+  if(curr == target) // curr might be equal to END, if other process already remove target
+  {
+    proc[prev].next = p->next;
+    p->next = END;
+  }
+  release(p_lock);
+  release(prev_lock);
 }
 
 void
-test_dequeue(void)
+print_list(struct sentinel* list)
 {
-  printf("Dequeue  element: %d\n", Dequeue(&test));
+  printf("%s\n", list->name);
+  struct proc* p;
+  int pid, next;
+  process_entry_t pentry = list->next;
+
+  while(pentry != END)
+  {
+    p = &proc[pentry];
+    pid = p->pid;
+    next = p->next;
+    printf("proc[%d], with pid %d, points to proc[%d]\n", pentry, pid, next);
+    pentry = next;
+  }
+}
+
+int
+set_cpu(int cpu_num)
+{
+  struct proc *p = myproc();
+  p->affiliated_cpu = cpu_num;
+  yield();
+  return cpuid() == p->affiliated_cpu ? cpu_num : -1;
+}
+
+int
+get_cpu(void)
+{
+  struct proc *p = myproc();
+  return p->affiliated_cpu;
 }

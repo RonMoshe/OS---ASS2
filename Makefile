@@ -29,8 +29,7 @@ OBJS = \
   $K/kernelvec.o \
   $K/plic.o \
   $K/virtio_disk.o \
-  $K/cas.o \
-  $K/Queue.o
+  $K/cas.o
 
 # riscv64-unknown-elf- or riscv64-linux-gnu-
 # perhaps in /opt/riscv/bin
@@ -134,8 +133,7 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
-	$U/_test\
-
+	$U/_test
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
@@ -153,7 +151,7 @@ clean:
 # try to generate a unique GDB port
 GDBPORT = $(shell expr `id -u` % 5000 + 25000)
 # QEMU's gdb stub command line changed in 0.11
-QEMUGDB =/ $(shell if $(QEMU) -help | grep -q '^-gdb'; \
+QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
 	then echo "-gdb tcp::$(GDBPORT)"; \
 	else echo "-s -p $(GDBPORT)"; fi)
 ifndef CPUS

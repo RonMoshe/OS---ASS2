@@ -1,41 +1,12 @@
-
 #include "kernel/types.h"
-#include "user/user.h"
+#include "user.h"
 
-
-void TestCasImpl(unsigned nforks)
+#define NFORKS 50
+int main(int argc, char* argv[])
 {
-    while(nforks--)
-        fork();
-    while(1){}
-}
-
-void TestEnqueue(unsigned nforks)
-{
-    while(nforks--)
-        fork();
-    test_enqueue();
-}
-
-void TestDequeue(void)
-{
-    while(1)
-        test_dequeue();
-}
-
-int main(int argc, char** argv)
-{
-    const unsigned int nforks = 5;
-    /* Test cas implementation 
-    if(fork())
-        sleep(5);
-    else
-        TestCasImpl(nforks);
-    procdump();
-    */
-    if(fork())
-        TestDequeue();
-    else
-        TestEnqueue(5);
+    int new_cpu = 2;
+    printf("cpu before calling to set_cpu(2): %d\n", get_cpu());
+    set_cpu(new_cpu);
+    printf("cpu after calling to set_cpu(2): %d\n", get_cpu());
     exit(0);
 }

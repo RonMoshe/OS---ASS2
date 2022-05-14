@@ -104,9 +104,8 @@ extern uint64 sys_unlink(void);
 extern uint64 sys_wait(void);
 extern uint64 sys_write(void);
 extern uint64 sys_uptime(void);
-extern uint64 sys_procdump(void);
-extern uint64 sys_test_enqueue(void);
-extern uint64 sys_test_dequeue(void);
+extern uint64 sys_set_cpu(void);
+extern uint64 sys_get_cpu(void);
 
 
 static uint64 (*syscalls[])(void) = {
@@ -131,9 +130,8 @@ static uint64 (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
-[SYS_procdump] sys_procdump,
-[SYS_test_enqueue] sys_test_enqueue,
-[SYS_test_dequeue] sys_test_dequeue
+[SYS_set_cpu] sys_set_cpu,
+[SYS_get_cpu] sys_get_cpu,
 };
 
 void

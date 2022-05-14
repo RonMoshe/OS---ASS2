@@ -97,22 +97,17 @@ sys_uptime(void)
 }
 
 uint64
-sys_procdump(void)
+sys_set_cpu(void)
 {
-  procdump();
-  return 0;
+  int cpu_num;
+
+  if(argint(0, &cpu_num) < 0)
+    return -1;
+  return set_cpu(cpu_num);
 }
 
 uint64
-sys_test_enqueue(void)
+sys_get_cpu(void)
 {
-  test_enqueue();
-  return 0;
-}
-
-uint64
-sys_test_dequeue(void)
-{
-  test_dequeue();
-  return 0;
+  return get_cpu();
 }
