@@ -12,6 +12,8 @@
 #define FIRST_CPU 0
 
 struct cpu cpus[NCPU];
+struct spinlock cpus_lock;
+
 
 static struct sentinel cpu_runnable_list[NCPU];
 
@@ -352,7 +354,23 @@ fork(void)
 
   acquire(&wait_lock);
   np->parent = p;
-  np->affiliated_cpu = p->affiliated_cpu;
+
+  acquire(&cpus_lock);
+
+  int min_proc_count = -1;
+  int min_index = -1;
+  for(int i = 0; i < NCPU; i++){
+    if(cpus[i].proc_count_in_cpu < min_proc_count || min_proc_count == -1){
+      min_proc_count = cpus[i].proc_count_in_cpu;
+      min_index = i;
+    }
+  }
+
+  //np->affiliated_cpu = p->affiliated_cpu;
+  np->affiliated_cpu = min_index;
+  cpus[min_index].proc_count_in_cpu = cpus[min_index].proc_count_in_cpu + 1;
+  release(&cpus_lock);
+
   release(&wait_lock);
 
   acquire(&np->lock);
@@ -627,6 +645,17 @@ wakeup(void *chan)
       acquire(&p->lock);
       if(p->state == SLEEPING && p->chan == chan) 
       {
+        acquire(&cpus_lock);
+        int min_proc_count = -1;
+        int min_index = -1;
+        for(int i = 0; i < NCPU; i++){
+          if(cpus[i].proc_count_in_cpu < min_proc_count || min_proc_count == -1){
+            min_proc_count = cpus[i].proc_count_in_cpu;
+            min_index = i;
+          }
+        }
+        
+
         remove(&sleeping_list, pentry);
         enqueue(&cpu_runnable_list[p->affiliated_cpu], pentry);
         // printf("proc %s state %d is waked up\n", p->name, p->state);
