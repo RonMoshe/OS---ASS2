@@ -355,7 +355,9 @@ fork(void)
   acquire(&wait_lock);
   np->parent = p;
 
-  acquire(&cpus_lock);
+  np->affiliated_cpu = p->affiliated_cpu;
+
+  #ifdef BLNCFLG
 
   int min_proc_count = -1;
   int min_index = -1;
@@ -366,10 +368,15 @@ fork(void)
     }
   }
 
-  //np->affiliated_cpu = p->affiliated_cpu;
   np->affiliated_cpu = min_index;
-  cpus[min_index].proc_count_in_cpu = cpus[min_index].proc_count_in_cpu + 1;
-  release(&cpus_lock);
+
+  do
+  {
+    expected = cpus[min_index].proc_count_in_cpu;
+    new_val = expected + 1;
+  } while (cas(&cpus[min_index].proc_count_in_cpu, expected, new_val));
+
+  #endif
 
   release(&wait_lock);
 
@@ -614,6 +621,16 @@ sleep(void *chan, struct spinlock *lk)
 
   acquire(&p->lock);  //DOC: sleeplock1
   // Go to sleep.
+
+  #ifdef BLNCFLG
+  do
+  {
+    expected = cpus[p->affiliated_cpu].proc_count_in_cpu;
+    new_val = expected - 1;
+  } while (cas(&cpus[p->affiliated_cpu].proc_count_in_cpu, expected, new_val));        
+  #endif
+
+
   enqueue(&sleeping_list, p->entry);
   p->state = SLEEPING;
   p->chan = chan;
@@ -645,7 +662,8 @@ wakeup(void *chan)
       acquire(&p->lock);
       if(p->state == SLEEPING && p->chan == chan) 
       {
-        acquire(&cpus_lock);
+        #ifdef BLNCFLG
+
         int min_proc_count = -1;
         int min_index = -1;
         for(int i = 0; i < NCPU; i++){
@@ -654,10 +672,17 @@ wakeup(void *chan)
             min_index = i;
           }
         }
-        
+        do
+        {
+          expected = cpus[min_index].proc_count_in_cpu;
+          new_val = expected + 1;
+        } while (cas(&cpus[min_index].proc_count_in_cpu, expected, new_val));        
+        p->affiliated_cpu = min_index;
+        #endif
 
         remove(&sleeping_list, pentry);
         enqueue(&cpu_runnable_list[p->affiliated_cpu], pentry);
+
         // printf("proc %s state %d is waked up\n", p->name, p->state);
         p->state = RUNNABLE;
       }
