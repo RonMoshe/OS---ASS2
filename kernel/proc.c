@@ -952,3 +952,8 @@ get_cpu(void)
   struct proc *p = myproc();
   return p->affiliated_cpu;
 }
+
+int
+cpu_process_count(int cpu_num){
+  return cpus[cpu_num].proc_count_in_cpu;
+}

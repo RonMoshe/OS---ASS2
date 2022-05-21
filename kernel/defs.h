@@ -112,6 +112,7 @@ void            remove(struct sentinel*, process_entry_t);
 void            print_list(struct sentinel*);
 int             set_cpu(int);
 int             get_cpu(void);
+int             cpu_process_count(int);
 
 // swtch.S
 void            swtch(struct context*, struct context*);
